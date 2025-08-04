@@ -1,0 +1,22 @@
+[server]
+fileWatcherType = "none"
+maxUploadSize = 200
+maxMessageSize = 200
+enableCORS = true
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#1e3c72"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+
+[logger]
+level = "warning"
+
+[runner]
+fastReruns = true
+enforceSerializableSessionState = false

@@ -1,0 +1,15 @@
+# Environment variables
+.env
+
+# Firebase credentials
+lbot-e990e-firebase-adminsdk-fbsvc-f5a78c3b06.json
+*.json
+
+# Streamlit secrets (for local development only)
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+
+# Checkpoints
+checkpoints/
