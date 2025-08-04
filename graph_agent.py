@@ -768,11 +768,19 @@ Return ONLY one word: greeting, courtesy, cancellation, or other
         return "You're welcome! Is there anything else I can help you with regarding your banking needs?"
     
     elif classification == "cancellation":
-        # Clear any ongoing transaction state
-        if state.get('current_account') or state.get('current_amount'):
-            state['current_account'] = None
-            state['current_amount'] = None
+        # Clear any ongoing transaction state - use correct field names
+        transaction_cleared = False
+        if (state.get('destination_account') and state.get('destination_account') not in [None, "None", ""]) or \
+           (state.get('transfer_amount') and state.get('transfer_amount') not in [None, "None", ""]):
+            state['destination_account'] = ""
+            state['transfer_amount'] = ""
+            state['needs_confirmation'] = False
+            state['confirmation_requested'] = False
+            state['user_confirmed'] = False
+            transaction_cleared = True
             print("🔄 Cleared transaction state due to cancellation")
+        
+        if transaction_cleared:
             return "Transaction cancelled. How can I help you with your banking needs today?"
         else:
             return "How can I help you with your banking needs today?"
