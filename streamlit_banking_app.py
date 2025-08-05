@@ -14,9 +14,11 @@ try:
     from firebase import DatabaseManager
     from functions import (
         transcribe, transcribe_uploaded_file, transcribe_audio_data,
-        record_audio_smart, record_and_transcribe, record_and_transcribe_pure_memory,
+        record_audio_smart, record_and_transcribe,
         load_audio_any
     )
+    # Import working microphone recording (replaces browser recording)
+    from streamlit_microphone import streamlit_microphone_interface
 except ImportError as e:
     st.error(f"Error importing modules: {e}")
     st.stop()
@@ -590,9 +592,8 @@ with st.sidebar:
     st.markdown("""
     **Try these examples:**
     
-    **🎤 Voice Input (NEW!):**
-    - Use **⚡ Quick Voice** for fast recording with defaults
-    - Use **🎤 Smart Record** for customizable settings
+    **🎤 Voice Input:**
+    - Use **🎤 Start Voice Recording** for enhanced recording with all features
     - Say: "Send five hundred dollars to Alice"
     - Say: "What is my balance?"
     - Say: "Transfer money to Bob"
@@ -615,11 +616,12 @@ with st.sidebar:
     
     # Smart Recording Tips
     st.markdown("""
-    **🎯 Smart Recording Tips:**
+    **🎯 Voice Recording Tips:**
     - **Speak naturally** - the system detects when you're done
-    - **Adjust sensitivity** if it's too sensitive to background noise
-    - **Increase silence timeout** if you speak slowly with pauses
-    - **Use Quick Voice** for convenience with good default settings
+    - **Real-time timer** shows recording progress
+    - **Auto-stops** at 30s or after 5s of silence
+    - **Manual stop** button available during recording
+    - **Enhanced audio** processing for better transcription
     """)
     
     st.divider()
@@ -695,285 +697,75 @@ with col1:
 
     st.divider()
 
-    # --- Voice Command UI ---
-    st.markdown(
-        """
-        <style>
-        .voice-btn {
-            background: #fff;
-            border: 2px solid #007bff;
-            border-radius: 50%;
-            width: 48px;
-            height: 48px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            margin-right: 8px;
-        }
-        .voice-btn:hover {
-            background: #007bff;
-            color: #fff;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div style="display:flex;align-items:center;">'
-        '<span style="font-size:2rem;" class="voice-btn">🎤</span>'
-        '<span style="font-size:1rem;">Voice Command</span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    # --- NEW: Placeholder for uploader ---
+    # Initialize variables for input handling
     uploader_ph = st.empty()
     user_input_value = None
     input_type = None
 
     # Add mic and upload controls as separate buttons
-    st.markdown("#### 🎙️ Voice Input Options")
+    st.markdown("#### 🎙️ Voice Input")
     
-    # Smart Recording Information
-    st.info("""
-    🎯 **New Smart Recording Feature!**
-    - **Automatic Detection**: Recording stops automatically when you stop speaking
-    - **No More Fixed Duration**: Just speak naturally, and it detects when you're done
-    - **Adjustable Settings**: Control sensitivity and silence timeout below
-    - **Better User Experience**: No need to worry about timing your speech
-    """)
+    # Simplified Recording Interface
+    col_record, col_upload = st.columns(2)
     
-    # Check admin status and show warning if needed
-    if not is_admin():
-        st.warning("⚠️ **Not running as Administrator** - Voice recording may fail with some audio devices")
-        st.info("💡 **Tip:** For best voice recording results, restart VS Code or your browser as Administrator")
-    
-    mic_col, upload_col = st.columns(2)
-    with mic_col:
-        # Smart recording controls
-        st.markdown("**🎤 Smart Recording**")
-        silence_limit = st.slider("Silence timeout (seconds)", min_value=2, max_value=10, value=5, key="silence_limit", 
-                                help="Recording stops after this many seconds of silence")
-        threshold = st.slider("Speech sensitivity", min_value=0.005, max_value=0.1, value=0.02, step=0.005, key="threshold",
-                            help="Lower values = more sensitive to quiet speech")
-        mic_record_btn = st.button("🎤 Smart Record", key="mic_record_btn", 
-                                 help="Records automatically until you stop speaking")
-        
-        # One-step record and transcribe option
-        one_step_btn = st.button("⚡ Quick Voice", key="one_step_btn",
-                                help="Record and transcribe in one step with default settings")
-        
-        # Traditional upload option
-        st.markdown("**⬆️ Upload Audio**")
-        upload_audio_btn = st.button("📁 Upload Audio File", key="upload_audio_btn")
-
-    #with upload_col:
-        #upload_audio_btn = st.button("⬆️ Upload Audio File", key="upload_audio_btn")   #I used one column for both buttons to keep it simple
-
-    # Reset state and show relevant input when a button is pressed
-    if mic_record_btn:
-        st.session_state["voice_audio_processed"] = False
-        st.session_state["audio_mode"] = "mic"
-        # Clear any previous error states
-        if "transcription_failed" in st.session_state:
-            del st.session_state["transcription_failed"]
-    if one_step_btn:
-        st.session_state["voice_audio_processed"] = False
-        st.session_state["audio_mode"] = "one_step"
-        # Clear any previous error states
-        if "transcription_failed" in st.session_state:
-            del st.session_state["transcription_failed"]
-    if upload_audio_btn:
-        st.session_state["voice_audio_processed"] = False
-        st.session_state["audio_mode"] = "upload"
-        # Clear any previous error states
-        if "transcription_failed" in st.session_state:
-            del st.session_state["transcription_failed"]
-
-    # Handle one-step record and transcribe
-    if (
-        ("audio_mode" in st.session_state and st.session_state["audio_mode"] == "one_step")
-        and not st.session_state["voice_audio_processed"]
-    ):
-        # Show device info
-        device_id, device_message = check_audio_devices()
-        if device_id is None:
-            st.error(f"❌ Audio Error: {device_message}")
-            st.error("Please check your microphone connection and permissions.")
-            st.session_state["voice_audio_processed"] = True
-        else:
-            st.info(f"🎤 {device_message}")
-            st.info("⚡ Quick Voice: Using default settings (5s silence timeout)")
+    with col_record:
+        # Initialize recording_active if not exists
+        if 'recording_active' not in st.session_state:
+            st.session_state.recording_active = False
             
-            try:
-                with st.spinner("⚡ Recording and transcribing... Speak now!"):
-                    # Use the pure in-memory function for better performance
-                    voice_transcript = record_and_transcribe_pure_memory()
-                
-                if voice_transcript:
-                    st.success(f"✅ Quick Voice Complete!")
-                    st.success(f"📝 Transcription: {voice_transcript}")
-                    user_input_value = voice_transcript.strip()
-                    input_type = "audio"
-                else:
-                    st.error("❌ Quick voice failed - no text detected")
-                    user_input_value = None
-                    
-                st.session_state["voice_audio_processed"] = True
-                    
-            except Exception as e:
-                st.error(f"❌ Quick voice error: {e}")
-                
-                # Check for common permission issues
-                error_str = str(e).lower()
-                if "permission" in error_str or "access" in error_str or "paerrorcode" in error_str:
-                    st.error("🔒 **This appears to be a Windows permissions issue:**")
-                    st.error("**SOLUTION:** Try one of these options:")
-                    st.error("1. **Close this app and restart VS Code/Terminal as Administrator**")
-                    st.error("2. **Or right-click your browser and 'Run as administrator'**")
-                    st.error("3. **Check Windows audio permissions for your microphone**")
-                    st.error("4. **Use the file upload option below instead**")
-                else:
-                    st.error("Possible solutions:")
-                    st.error("1. Check microphone permissions")
-                    st.error("2. Try the regular Smart Record option with custom settings")
-                    st.error("3. Use file upload instead")
-                    
-                st.session_state["voice_audio_processed"] = True
-                user_input_value = None
-
-    # Handle mic recording
-    if (
-        ("audio_mode" in st.session_state and st.session_state["audio_mode"] == "mic")
-        and not st.session_state["voice_audio_processed"]
-    ):
-        # Get user-configured settings
-        silence_limit = st.session_state.get("silence_limit", 5.0)
-        threshold = st.session_state.get("threshold", 0.02)
+        # Single toggle button for recording
+        # Check if microphone interface is recording
+        mic_recording_active = (st.session_state.get('recording_status', 'ready') in ['recording', 'transcribing'])
         
-        # Show device info
-        device_id, device_message = check_audio_devices()
-        if device_id is None:
-            st.error(f"❌ Audio Error: {device_message}")
-            st.error("Please check your microphone connection and permissions.")
-            st.session_state["voice_audio_processed"] = True
+        if not mic_recording_active:
+            # Start recording button
+            if st.button("🎤 Start Voice Recording", key="voice_toggle_btn", type="primary",
+                         help="Start recording (max 30 seconds)"):
+                # Reset all recording states
+                st.session_state["voice_audio_processed"] = False
+                st.session_state["audio_mode"] = "voice_record"
+                # Reset microphone interface state
+                st.session_state['recording_status'] = 'ready'
+                st.session_state.recording_stopped_manually = False  # Reset manual stop flag
+                # Clear any previous error states
+                if "transcription_failed" in st.session_state:
+                    del st.session_state["transcription_failed"]
+                st.rerun()  # Refresh to start recording
         else:
-            st.info(f"🎤 {device_message}")
-            st.info(f"📊 Smart Recording Settings: {silence_limit}s silence timeout, {threshold:.3f} sensitivity")
-            
-            try:
-                with st.spinner("🎤 Smart recording in progress... Speak now!"):
-                    # Use the new smart recording function with in-memory enhancement
-                    audio_path = record_audio_smart(
-                        max_wait=30.0,  # Maximum 30 seconds
-                        silence_limit=silence_limit,
-                        threshold=threshold,
-                        apply_enhancement=True  # Apply enhancement during recording
-                    )
-                
-                if audio_path:
-                    st.success("✅ Recording completed successfully!")
-                    
-                    # Transcribe using in-memory enhancement (the file is already enhanced)
-                    with st.spinner("🔊 Transcribing enhanced recording..."):
-                        voice_transcript = transcribe_uploaded_file(
-                            audio_path, apply_enhancement=False  # Already enhanced during recording
-                        )
-                        
-                    if voice_transcript:
-                        st.success(f"📝 Transcription: {voice_transcript}")
-                        user_input_value = voice_transcript.strip()
-                        input_type = "audio"
-                        
-                        # Clean up the temporary file
-                        try:
-                            os.remove(audio_path)
-                            print(f"🗑️  Cleaned up temporary recording file")
-                        except Exception as e:
-                            print(f"⚠️  Could not remove temporary file: {e}")
-                    else:
-                        st.error("❌ Transcription failed - no text detected")
-                        user_input_value = None
-                        
-                else:
-                    st.error("❌ Smart recording failed")
-                    user_input_value = None
-                    
-                st.session_state["voice_audio_processed"] = True
-                    
-            except Exception as e:
-                st.error(f"❌ Smart recording error: {e}")
-                
-                # Check for common permission issues
-                error_str = str(e).lower()
-                if "permission" in error_str or "access" in error_str or "paerrorcode" in error_str:
-                    st.error("🔒 **This appears to be a Windows permissions issue:**")
-                    st.error("**SOLUTION:** Try one of these options:")
-                    st.error("1. **Close this app and restart VS Code/Terminal as Administrator**")
-                    st.error("2. **Or right-click your browser and 'Run as administrator'**")
-                    st.error("3. **Check Windows audio permissions for your microphone**")
-                    st.error("4. **Use the file upload option below instead**")
-                else:
-                    st.error("Possible solutions:")
-                    st.error("1. Check microphone permissions")
-                    st.error("2. Try adjusting sensitivity settings")
-                    st.error("3. Use file upload instead")
-                    
-                st.session_state["voice_audio_processed"] = True
-                user_input_value = None
+            # Show recording status - the microphone interface handles the stop button
+            st.info("🔴 Recording in progress... (managed by microphone interface)")
+    
+    with col_upload:
+        
+        if st.button("📁 Upload Audio File", key="upload_audio_btn",
+                     help="Upload pre-recorded audio file"):
+            st.session_state["voice_audio_processed"] = False
+            st.session_state["audio_mode"] = "upload"
+            # Clear any previous error states
+            if "transcription_failed" in st.session_state:
+                del st.session_state["transcription_failed"]
 
-    # Handle file upload
-        if user_input_value:
-            update_transfer_state(user_query=user_input_value)
-            st.session_state.chat_history.append({
-                'type': 'user',
-                'content': user_input_value,
-                'timestamp': st.session_state.conversation_count
-            })
-            with st.spinner("🤖 Processing your request..."):
-                try:
-                    result = execute_banking_graph(
-                        thread_id=st.session_state.thread_id,
-                        user_input=user_input_value,
-                        user_token=st.session_state.user_token,
-                        current_state=st.session_state.transfer_state
-                    )
-                    response = result.get("message", "Sorry, I couldn't process your request.")
-                    if result.get("transfer_state"):
-                        transfer_state = result["transfer_state"]
-                        st.session_state.transfer_state = transfer_state
-                        if (result.get("response_type") == "transaction" and 
-                            result.get("status") == "success" and
-                            transfer_state.get('transfer_amount')):
-                            new_balance = get_current_balance(st.session_state.user_token)
-                            update_transfer_state(user_balance=new_balance)
-                    st.session_state.conversation_context['last_response'] = result
-                    st.session_state.conversation_context['turn'] = st.session_state.conversation_count
-                    if (result.get("response_type") == "transaction" and 
-                        result.get("status") == "success" and
-                        not result.get("needs_more_info", False)):
-                        st.session_state.conversation_context = {}
-                        update_transfer_state(transaction_result="COMPLETED")
-                    if (result.get("response_type") == "transaction" and 
-                        result.get("status") == "success" and 
-                        result.get("redirect_url")):
-                        response += f" Navigate to: {result['redirect_url']}"
-                    st.session_state.chat_history.append({
-                        'type': 'bot',
-                        'content': response,
-                        'timestamp': st.session_state.conversation_count
-                    })
-                    st.session_state.conversation_count += 1
-                except Exception as e:
-                    error_message = "I apologize, but I'm experiencing technical difficulties and cannot process your request at the moment. Please try again in a few moments, or contact our customer support team for immediate assistance."
-                    update_transfer_state(ai_response=error_message, transaction_result="ERROR")
-                    st.session_state.chat_history.append({
-                        'type': 'bot',
-                        'content': error_message,
-                        'timestamp': st.session_state.conversation_count
-                    })
-            st.rerun()
+    # Handle enhanced voice recording
+    if (
+        ("audio_mode" in st.session_state and st.session_state["audio_mode"] == "voice_record")
+        and not st.session_state["voice_audio_processed"]
+    ):        
+        # Use working microphone recording interface
+        transcription_result = streamlit_microphone_interface()
+        if transcription_result:
+            st.success("✅ Recording completed successfully!")
+            st.success(f"📝 Transcription: {transcription_result}")
+            user_input_value = transcription_result.strip()
+            input_type = "audio"
+            st.session_state["voice_audio_processed"] = True  # Only set to True when we have a result
+            
+            # Reset audio mode so user can start fresh next time
+            st.session_state["audio_mode"] = None
+        else:
+            user_input_value = None
+            # Don't set voice_audio_processed to True yet - keep trying until we get a result
+
+    # --- END NEW voice recording logic ---
 
     # Handle file upload
     if (
@@ -1109,7 +901,7 @@ with col1:
         user_input_value = text_input_value.strip()
         input_type = "text"
 
-    if user_input_value and input_type == "text":
+    if user_input_value and input_type in ["text", "audio"]:
         update_transfer_state(user_query=user_input_value)
         st.session_state.chat_history.append({
             'type': 'user',
@@ -1150,6 +942,13 @@ with col1:
                     'timestamp': st.session_state.conversation_count
                 })
                 st.session_state.conversation_count += 1
+                
+                # Reset voice recording states after successful conversation processing
+                if input_type == "audio":
+                    st.session_state["voice_audio_processed"] = False
+                    if "audio_mode" in st.session_state:
+                        del st.session_state["audio_mode"]
+                        
             except Exception as e:
                 error_message = "I apologize, but I'm experiencing technical difficulties and cannot process your request at the moment. Please try again in a few moments, or contact our customer support team for immediate assistance."
                 update_transfer_state(ai_response=error_message, transaction_result="ERROR")

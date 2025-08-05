@@ -75,7 +75,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 
 # === CONFIG (edit these manually) ===
-INPUT_PATH       = r"send_500_rs_to_hnb.mp3"
+#INPUT_PATH       = r"send_500_rs_to_hnb.mp3"
 MODEL_SIZE       = "tiny"       # choices: tiny, base, small, medium, large
 COMPUTE_TYPE     = "float32"    # choices: float16, int8, float32
 LANGUAGE         = "en"         # or None for autodetect
@@ -90,7 +90,7 @@ RECORDING_SAMPLE_RATE = 16000    # Samples per second for recording
 THRESHOLD = 0.02       # RMS threshold for detecting speech
 # ====================================
 
-ENHANCED_OUTPUT_DIR = r"C:\Projects\voice_agent\voice_enhancement"
+ENHANCED_OUTPUT_DIR = r".\voice_enhancement"
 os.makedirs(ENHANCED_OUTPUT_DIR, exist_ok=True)
 
 # --- ClearVoice setup (optional) ---
@@ -113,139 +113,113 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
                       silence_limit=SILENCE_LIMIT, threshold=THRESHOLD,
                       output_dir=None, apply_enhancement=True):
     """
-    Smart audio recording that automatically stops when user stops speaking.
-    Applies voice enhancement in memory and returns the path to the saved audio file.
+    Smart audio recording with automatic silence detection.
+    Records until silence is detected or max time is reached.
     
     Args:
-        sample_rate: Audio sample rate (Hz)
-        max_wait: Maximum total recording time (seconds)
-        silence_limit: How long to wait after silence before stopping (seconds)
+        sample_rate: Audio sample rate for recording
+        max_wait: Maximum recording time in seconds
+        silence_limit: Silence duration before stopping in seconds
         threshold: RMS threshold for detecting speech
-        output_dir: Directory to save the recording (defaults to voice_enhancement dir)
-        apply_enhancement: Whether to apply voice enhancement in memory
+        output_dir: Directory to save the recorded file (optional)
+        apply_enhancement: Whether to apply enhancement after recording
     
     Returns:
-        str: Path to the saved audio file, or None if recording failed
+        str: Path to the recorded audio file, or None if failed
     """
-    if output_dir is None:
-        output_dir = ENHANCED_OUTPUT_DIR
-    
-    # Prepare recording variables
-    recorded_audio = []
-    start_time = time.time()
-    silent_start = None
-    stop_flag = False
-    block_size = int(BLOCK_DURATION * sample_rate)
-    
-    print(f"🎤 Smart recording started. Speak now...")
-    print(f"📊 Settings: Max wait={max_wait}s, Silence limit={silence_limit}s, Threshold={threshold}")
-    if apply_enhancement:
-        print(f"🔧 Voice enhancement will be applied in memory")
-    
-    def audio_callback(indata, frames, time_info, status):
-        nonlocal silent_start, stop_flag, recorded_audio
-        
-        if status:
-            print(f"InputStream Status: {status}")
-        
-        # Store the audio data
-        recorded_audio.append(indata.copy())
-        
-        # Use first channel for mono analysis
-        audio_block = indata[:, 0] if indata.ndim > 1 else indata
-        rms = np.sqrt(np.mean(audio_block**2))
-        
-        now = time.time()
-        
-        # Check if we're detecting speech
-        if rms > threshold:
-            if silent_start is not None:
-                print(f"🗣️  Speech detected (RMS: {rms:.4f})")
-            silent_start = None  # Reset silence timer on speech
-        else:
-            if silent_start is None:
-                silent_start = now  # Mark silence start
-                print(f"🤫 Silence started (RMS: {rms:.4f})")
-        
-        # Calculate time since recording started and since silence began
-        since_start = now - start_time
-        since_silence = (now - silent_start) if silent_start else 0.0
-        
-        # Show live status every few blocks
-        if len(recorded_audio) % 20 == 0:  # Every ~2 seconds
-            if silent_start:
-                print(f"⏱️  Recording: {since_start:.1f}s | Silence: {since_silence:.1f}s/{silence_limit}s")
-            else:
-                print(f"⏱️  Recording: {since_start:.1f}s | Speaking...")
-        
-        # Stop criteria
-        if since_start >= max_wait:
-            print(f"⏰ Maximum recording time ({max_wait}s) reached")
-            stop_flag = True
-            raise sd.CallbackStop()
-        elif silent_start and since_silence >= silence_limit:
-            print(f"🛑 Stopping after {silence_limit}s of silence")
-            stop_flag = True
-            raise sd.CallbackStop()
+    print("🎙️ Starting smart microphone recording...")
+    print(f"📊 Config: {sample_rate}Hz, max {max_wait}s, silence limit {silence_limit}s")
     
     try:
-        # Open the microphone stream
+        # Initialize recording variables
+        recorded_data = []
+        silent_chunks = 0
+        total_chunks = 0
+        max_chunks = int(max_wait / BLOCK_DURATION)
+        silence_chunks_needed = int(silence_limit / BLOCK_DURATION)
+        chunk_size = int(sample_rate * BLOCK_DURATION)
+        
+        print(f"🔴 Recording started... Speak now! (threshold: {threshold})")
+        print("💡 Recording will stop automatically after silence or max time")
+        
+        # Start recording
+        recording_started = False
+        
+        def audio_callback(indata, frames, time, status):
+            nonlocal recorded_data, silent_chunks, total_chunks, recording_started
+            if status:
+                print(f"⚠️  Audio callback status: {status}")
+            
+            # Convert to mono if stereo
+            audio_chunk = indata[:, 0] if indata.shape[1] > 1 else indata.flatten()
+            recorded_data.append(audio_chunk.copy())
+            
+            # Calculate RMS for this chunk
+            rms = np.sqrt(np.mean(audio_chunk ** 2))
+            total_chunks += 1
+            
+            if rms > threshold:
+                silent_chunks = 0
+                if not recording_started:
+                    recording_started = True
+                    print("🎤 Speech detected, recording active...")
+                print(f"🟢 Audio level: {rms:.4f}")
+            else:
+                silent_chunks += 1
+                if recording_started:
+                    print(f"🔵 Silence: {silent_chunks}/{silence_chunks_needed} chunks")
+        
+        # Record audio with callback
         with sd.InputStream(
-            channels=1,
             samplerate=sample_rate,
-            blocksize=block_size,
-            callback=audio_callback,
-            dtype=np.float32
+            channels=1,
+            dtype=np.float32,
+            blocksize=chunk_size,
+            callback=audio_callback
         ):
-            # Keep the main thread alive while recording
-            while not stop_flag:
-                time.sleep(0.1)
+            # Monitor recording progress
+            while total_chunks < max_chunks:
+                time.sleep(BLOCK_DURATION)
+                
+                # Stop if we've been silent long enough after detecting speech
+                if recording_started and silent_chunks >= silence_chunks_needed:
+                    print(f"🛑 Stopping: {silence_limit}s of silence detected")
+                    break
+                    
+                # Show progress every second
+                if total_chunks % int(1.0 / BLOCK_DURATION) == 0:
+                    elapsed = total_chunks * BLOCK_DURATION
+                    print(f"⏱️  Recording: {elapsed:.1f}s / {max_wait}s")
+            
+            if total_chunks >= max_chunks:
+                print(f"🛑 Stopping: Maximum recording time ({max_wait}s) reached")
         
-        print("⏹️  Recording stopped.")
-        
-        # Process the recorded audio
-        if not recorded_audio:
-            print("❌ No audio was recorded")
+        # Process recorded data
+        if not recorded_data:
+            print("❌ No audio data recorded")
             return None
         
-        # Concatenate all audio blocks
-        full_audio = np.concatenate(recorded_audio, axis=0)
-        if full_audio.ndim > 1:
-            full_audio = full_audio[:, 0]  # Convert to mono
-        
-        # Normalize audio
-        if np.max(np.abs(full_audio)) > 0:
-            full_audio = full_audio / np.max(np.abs(full_audio)) * 0.95
-        
-        # Apply voice enhancement in memory if requested
-        if apply_enhancement:
-            print("🔧 Applying voice enhancement to recorded audio...")
-            enhanced_audio, enhanced_sr = voice_enhancement_in_memory(full_audio, sample_rate)
-            final_audio = enhanced_audio
-            final_sr = enhanced_sr
-        else:
-            final_audio = full_audio
-            final_sr = sample_rate
+        # Concatenate all chunks
+        full_audio = np.concatenate(recorded_data)
+        duration = len(full_audio) / sample_rate
+        print(f"✅ Recording complete: {duration:.2f}s, {len(full_audio)} samples")
         
         # Generate output filename
+        if output_dir is None:
+            output_dir = ENHANCED_OUTPUT_DIR
+        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        prefix = "smart_enhanced" if apply_enhancement else "smart_recording"
-        output_filename = f"{prefix}_{timestamp}.wav"
+        output_filename = f"recording_{timestamp}.wav"
         output_path = os.path.join(output_dir, output_filename)
         
-        # Save the audio file
-        sf.write(output_path, final_audio, final_sr, subtype="PCM_16")
-        
-        duration = len(final_audio) / final_sr
-        print(f"✅ Smart recording saved: {output_path}")
-        print(f"📊 Duration: {duration:.2f}s, Samples: {len(final_audio)}")
-        if apply_enhancement:
-            print(f"🔧 Voice enhancement applied successfully")
+        # Save the recording
+        sf.write(output_path, full_audio, sample_rate, subtype="PCM_16")
+        print(f"💾 Audio saved to: {output_path}")
         
         return output_path
         
     except Exception as e:
-        print(f"❌ Smart recording failed: {e}")
+        print(f"❌ Recording failed: {e}")
         return None
 
 
@@ -588,127 +562,4 @@ def record_and_transcribe(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
         
     except Exception as e:
         print(f"❌ Transcription failed: {e}")
-        return None
-
-
-def record_and_transcribe_pure_memory(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
-                                     silence_limit=SILENCE_LIMIT, threshold=THRESHOLD,
-                                     language=LANGUAGE, vad_filter=VAD_FILTER, 
-                                     apply_enhancement=True) -> str:
-    """
-    Pure in-memory version that doesn't save any files at all.
-    Records directly to memory and processes without temporary files.
-    
-    Args:
-        sample_rate: Audio sample rate for recording
-        max_wait: Maximum recording time
-        silence_limit: Silence duration before stopping
-        threshold: Speech detection threshold
-        language: Language for transcription
-        vad_filter: Voice activity detection for transcription
-        apply_enhancement: Whether to apply voice enhancement
-    
-    Returns:
-        str: Transcribed text, or None if failed
-    """
-    print("🎙️ Starting pure in-memory record and transcribe...")
-    
-    # Prepare recording variables
-    recorded_audio = []
-    start_time = time.time()
-    silent_start = None
-    stop_flag = False
-    block_size = int(BLOCK_DURATION * sample_rate)
-    
-    print(f"📊 Settings: Max wait={max_wait}s, Silence limit={silence_limit}s, Threshold={threshold}")
-    if apply_enhancement:
-        print(f"🔧 Voice enhancement will be applied in memory")
-    
-    def audio_callback(indata, frames, time_info, status):
-        nonlocal silent_start, stop_flag, recorded_audio
-        
-        if status:
-            print(f"InputStream Status: {status}")
-        
-        # Store the audio data
-        recorded_audio.append(indata.copy())
-        
-        # Use first channel for mono analysis
-        audio_block = indata[:, 0] if indata.ndim > 1 else indata
-        rms = np.sqrt(np.mean(audio_block**2))
-        
-        now = time.time()
-        
-        # Check if we're detecting speech
-        if rms > threshold:
-            if silent_start is not None:
-                print(f"🗣️  Speech detected (RMS: {rms:.4f})")
-            silent_start = None  # Reset silence timer on speech
-        else:
-            if silent_start is None:
-                silent_start = now  # Mark silence start
-                print(f"🤫 Silence started (RMS: {rms:.4f})")
-        
-        # Calculate time since recording started and since silence began
-        since_start = now - start_time
-        since_silence = (now - silent_start) if silent_start else 0.0
-        
-        # Show live status every few blocks
-        if len(recorded_audio) % 20 == 0:  # Every ~2 seconds
-            if silent_start:
-                print(f"⏱️  Recording: {since_start:.1f}s | Silence: {since_silence:.1f}s/{silence_limit}s")
-            else:
-                print(f"⏱️  Recording: {since_start:.1f}s | Speaking...")
-        
-        # Stop criteria
-        if since_start >= max_wait:
-            print(f"⏰ Maximum recording time ({max_wait}s) reached")
-            stop_flag = True
-            raise sd.CallbackStop()
-        elif silent_start and since_silence >= silence_limit:
-            print(f"🛑 Stopping after {silence_limit}s of silence")
-            stop_flag = True
-            raise sd.CallbackStop()
-    
-    try:
-        # Record audio
-        with sd.InputStream(
-            channels=1,
-            samplerate=sample_rate,
-            blocksize=block_size,
-            callback=audio_callback,
-            dtype=np.float32
-        ):
-            while not stop_flag:
-                time.sleep(0.1)
-        
-        print("⏹️  Recording stopped.")
-        
-        # Process the recorded audio
-        if not recorded_audio:
-            print("❌ No audio was recorded")
-            return None
-        
-        # Concatenate all audio blocks
-        full_audio = np.concatenate(recorded_audio, axis=0)
-        if full_audio.ndim > 1:
-            full_audio = full_audio[:, 0]  # Convert to mono
-        
-        # Normalize audio
-        if np.max(np.abs(full_audio)) > 0:
-            full_audio = full_audio / np.max(np.abs(full_audio)) * 0.95
-        
-        duration = len(full_audio) / sample_rate
-        print(f"✅ Recorded {duration:.2f}s of audio ({len(full_audio)} samples)")
-        
-        # Transcribe directly from memory
-        print("🔄 Transcribing audio directly from memory...")
-        transcription = transcribe_audio_data(
-            full_audio, sample_rate, language, vad_filter, apply_enhancement
-        )
-        
-        return transcription
-        
-    except Exception as e:
-        print(f"❌ Pure memory record and transcribe failed: {e}")
         return None
