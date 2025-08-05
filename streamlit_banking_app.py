@@ -15,7 +15,8 @@ try:
     from functions import (
         transcribe, transcribe_uploaded_file, transcribe_audio_data,
         record_audio_smart, record_and_transcribe,
-        load_audio_any
+        load_audio_any, check_audio_devices, find_working_audio_device,
+        reset_audio_device_cache
     )
     # Import working microphone recording (replaces browser recording)
     from streamlit_microphone import streamlit_microphone_interface
@@ -31,8 +32,100 @@ def is_admin():
     except:
         return False
 
-def check_audio_devices():
-    """Check available audio input devices and return device info."""
+def display_audio_diagnostics():
+    """Display audio device diagnostics in the sidebar."""
+    st.markdown("#### 🔊 Audio System Status")
+    
+    # Add a button to manually test audio devices instead of auto-testing
+    col_test, col_reset = st.columns(2)
+    
+    with col_test:
+        if st.button("🔍 Test Audio", help="Check audio device status"):
+            with st.spinner("Testing audio devices..."):
+                try:
+                    # Check audio devices
+                    device_works, devices, default_input = check_audio_devices()
+                    
+                    if device_works:
+                        st.success("✅ Audio system ready")
+                        default_device = devices[default_input] if default_input is not None else None
+                        if default_device:
+                            st.info(f"🎤 Default device: {default_device['name']}")
+                    else:
+                        st.error("❌ Audio system issues detected")
+                        
+                        # Try to find working device
+                        working_device_id, working_device = find_working_audio_device()
+                        if working_device:
+                            st.warning(f"⚠️ Found alternative device: {working_device['name']}")
+                        else:
+                            st.error("❌ No working audio devices found")
+                            
+                            # Show troubleshooting tips
+                            with st.expander("🔧 Troubleshooting Tips", expanded=True):
+                                st.markdown("""
+                                **Common fixes for audio issues:**
+                                
+                                1. **Check microphone connection** - Ensure your microphone is connected and enabled
+                                2. **Grant microphone permissions** - Allow Python/Streamlit access to microphone
+                                3. **Run as Administrator** - Right-click and run as Administrator
+                                4. **Check Windows Sound settings** - Ensure microphone is not muted
+                                5. **Update audio drivers** - Check for driver updates
+                                6. **Restart audio services** - Restart Windows Audio service
+                                7. **Try different browser** - If using browser recording
+                                
+                                **For Bluetooth headsets:**
+                                - Switch to "Headset" mode in Windows Sound settings
+                                - Disconnect and reconnect the device
+                                - Try using wired headphones instead
+                                """)
+                                
+                                # Show admin status
+                                if is_admin():
+                                    st.info("✅ Running with Administrator privileges")
+                                else:
+                                    st.warning("⚠️ Not running as Administrator - this may help with audio access")
+                    
+                    # Show device list in expander
+                    with st.expander("📱 Available Audio Devices"):
+                        if devices:
+                            for i, device in enumerate(devices):
+                                device_type = []
+                                if device['max_input_channels'] > 0:
+                                    device_type.append("INPUT")
+                                if device['max_output_channels'] > 0:
+                                    device_type.append("OUTPUT")
+                                
+                                default_marker = " [DEFAULT]" if i == default_input else ""
+                                
+                                st.text(f"{i}: {device['name']} - {'/'.join(device_type)}{default_marker}")
+                        else:
+                            st.error("No audio devices detected")
+                            
+                except Exception as e:
+                    st.error(f"❌ Audio diagnostics failed: {e}")
+    
+    with col_reset:
+        if st.button("🔄 Reset Audio", help="Reset audio device cache"):
+            reset_audio_device_cache()
+            st.success("🔄 Audio cache reset")
+    
+    # Show basic status without testing
+    if 'audio_test_completed' not in st.session_state:
+        st.info("🎤 Click 'Test Audio' to check microphone status")
+        
+        # Show quick audio tips
+        with st.expander("💡 Audio Tips"):
+            st.markdown("""
+            **For best voice recording:**
+            - Use a **Bluetooth headset** or **USB microphone**
+            - Ensure **microphone permissions** are granted
+            - **Speak clearly** and avoid background noise
+            - Recording **auto-stops** after silence detection
+            """)
+
+def check_audio_devices_simple():
+    """Simplified audio device check for streamlit."""
     try:
         devices = sd.query_devices()
         input_devices = [d for d in devices if d['max_input_channels'] > 0]
@@ -542,6 +635,11 @@ with st.sidebar:
     
     # Agent Status
     st.success("✅ Using Unified Agent - Natural language understanding & intelligent conversation routing")
+    
+    st.divider()
+    
+    # Audio System Diagnostics
+    display_audio_diagnostics()
     
     st.divider()
     

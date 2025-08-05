@@ -90,6 +90,9 @@ RECORDING_SAMPLE_RATE = 16000    # Samples per second for recording
 THRESHOLD = 0.02       # RMS threshold for detecting speech
 # ====================================
 
+# Cache for working audio device to avoid repeated testing
+_cached_working_device = None
+
 ENHANCED_OUTPUT_DIR = r".\voice_enhancement"
 os.makedirs(ENHANCED_OUTPUT_DIR, exist_ok=True)
 
@@ -107,6 +110,98 @@ def init_clearvoice():
     return ClearVoice(task="speech_enhancement", model_names=["MossFormer2_SE_48K"])
 
 _myClearVoice = init_clearvoice()
+
+
+def check_audio_devices():
+    """Check available audio devices and return device info."""
+    try:
+        import sounddevice as sd
+        print("🔍 Checking available audio devices...")
+        
+        # Get device list
+        devices = sd.query_devices()
+        print(f"📱 Found {len(devices)} audio devices:")
+        
+        default_input = sd.default.device[0] if hasattr(sd.default, 'device') else None
+        default_output = sd.default.device[1] if hasattr(sd.default, 'device') else None
+        
+        for i, device in enumerate(devices):
+            device_type = []
+            if device['max_input_channels'] > 0:
+                device_type.append("INPUT")
+            if device['max_output_channels'] > 0:
+                device_type.append("OUTPUT")
+            
+            default_marker = ""
+            if i == default_input:
+                default_marker += " [DEFAULT INPUT]"
+            if i == default_output:
+                default_marker += " [DEFAULT OUTPUT]"
+            
+            print(f"  {i}: {device['name']} - {'/'.join(device_type)}{default_marker}")
+            print(f"      Max channels: {device['max_input_channels']} in, {device['max_output_channels']} out")
+            print(f"      Sample rate: {device['default_samplerate']} Hz")
+        
+        # Test default input device
+        if default_input is not None:
+            print(f"🎤 Testing default input device: {devices[default_input]['name']}")
+            try:
+                # Try a very short test recording
+                test_duration = 0.1  # 100ms test
+                test_data = sd.rec(int(test_duration * 16000), samplerate=16000, channels=1, dtype=np.float32)
+                sd.wait()
+                print("✅ Default input device test successful")
+                return True, devices, default_input
+            except Exception as e:
+                print(f"❌ Default input device test failed: {e}")
+                return False, devices, default_input
+        else:
+            print("❌ No default input device found")
+            return False, devices, None
+            
+    except Exception as e:
+        print(f"❌ Audio device check failed: {e}")
+        return False, [], None
+
+
+def find_working_audio_device():
+    """Find a working audio input device."""
+    try:
+        import sounddevice as sd
+        devices = sd.query_devices()
+        
+        # Try each input device
+        for i, device in enumerate(devices):
+            if device['max_input_channels'] > 0:
+                print(f"🧪 Testing device {i}: {device['name']}")
+                try:
+                    # Set this device as default temporarily
+                    sd.default.device = i
+                    
+                    # Very short test
+                    test_data = sd.rec(int(0.1 * 16000), samplerate=16000, channels=1, dtype=np.float32)
+                    sd.wait()
+                    
+                    print(f"✅ Device {i} works: {device['name']}")
+                    return i, device
+                    
+                except Exception as e:
+                    print(f"❌ Device {i} failed: {e}")
+                    continue
+        
+        print("❌ No working audio input devices found")
+        return None, None
+        
+    except Exception as e:
+        print(f"❌ Error finding working device: {e}")
+        return None, None
+
+
+def reset_audio_device_cache():
+    """Reset the cached working audio device."""
+    global _cached_working_device
+    _cached_working_device = None
+    print("🔄 Audio device cache reset")
 
 
 def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT, 
@@ -127,8 +222,52 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
     Returns:
         str: Path to the recorded audio file, or None if failed
     """
+    global _cached_working_device
+    
     print("🎙️ Starting smart microphone recording...")
     print(f"📊 Config: {sample_rate}Hz, max {max_wait}s, silence limit {silence_limit}s")
+    
+    # Import sounddevice at the start to ensure it's available throughout the function
+    import sounddevice as sd
+    
+    # Use cached device if available, otherwise find working device
+    if _cached_working_device is not None:
+        print(f"🔄 Using cached working device: {_cached_working_device}")
+        try:
+            # Quick test of cached device
+            sd.default.device = _cached_working_device
+            test_data = sd.rec(int(0.1 * 16000), samplerate=16000, channels=1, dtype=np.float32)
+            sd.wait()
+            print("✅ Cached device still works")
+        except Exception as e:
+            print(f"⚠️ Cached device failed ({e}), searching for new device...")
+            _cached_working_device = None
+    
+    if _cached_working_device is None:
+        # First, check audio devices
+        device_works, devices, default_input = check_audio_devices()
+        
+        if not device_works:
+            print("🔧 Default device failed, searching for working device...")
+            working_device_id, working_device = find_working_audio_device()
+            
+            if working_device_id is not None:
+                print(f"✅ Found working device: {working_device['name']}")
+                # Set the working device as default and cache it
+                sd.default.device = working_device_id
+                _cached_working_device = working_device_id
+            else:
+                print("❌ No working audio devices found")
+                print("💡 Troubleshooting tips:")
+                print("   1. Check if your microphone is connected and enabled")
+                print("   2. Ensure microphone permissions are granted to Python/Streamlit")
+                print("   3. Try running as Administrator")
+                print("   4. Check Windows Sound settings")
+                print("   5. Update audio drivers")
+                return None
+        else:
+            # Cache the working default device
+            _cached_working_device = default_input
     
     try:
         # Initialize recording variables
@@ -169,30 +308,63 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
                 if recording_started:
                     print(f"🔵 Silence: {silent_chunks}/{silence_chunks_needed} chunks")
         
-        # Record audio with callback
-        with sd.InputStream(
-            samplerate=sample_rate,
-            channels=1,
-            dtype=np.float32,
-            blocksize=chunk_size,
-            callback=audio_callback
-        ):
-            # Monitor recording progress
-            while total_chunks < max_chunks:
-                time.sleep(BLOCK_DURATION)
+        # Try different audio configurations if the first fails
+        audio_configs = [
+            # Standard config
+            {'samplerate': sample_rate, 'channels': 1, 'dtype': np.float32, 'blocksize': chunk_size},
+            # Try different sample rates
+            {'samplerate': 44100, 'channels': 1, 'dtype': np.float32, 'blocksize': int(44100 * BLOCK_DURATION)},
+            {'samplerate': 48000, 'channels': 1, 'dtype': np.float32, 'blocksize': int(48000 * BLOCK_DURATION)},
+            # Try different data types
+            {'samplerate': sample_rate, 'channels': 1, 'dtype': 'int16', 'blocksize': chunk_size},
+            # Try without explicit blocksize
+            {'samplerate': sample_rate, 'channels': 1, 'dtype': np.float32},
+        ]
+        
+        recording_successful = False
+        
+        for i, config in enumerate(audio_configs):
+            try:
+                print(f"🧪 Trying audio configuration {i+1}/{len(audio_configs)}: {config}")
                 
-                # Stop if we've been silent long enough after detecting speech
-                if recording_started and silent_chunks >= silence_chunks_needed:
-                    print(f"🛑 Stopping: {silence_limit}s of silence detected")
-                    break
+                # Record audio with callback
+                with sd.InputStream(callback=audio_callback, **config):
+                    # Monitor recording progress
+                    actual_sample_rate = config['samplerate']
+                    actual_block_duration = BLOCK_DURATION
                     
-                # Show progress every second
-                if total_chunks % int(1.0 / BLOCK_DURATION) == 0:
-                    elapsed = total_chunks * BLOCK_DURATION
-                    print(f"⏱️  Recording: {elapsed:.1f}s / {max_wait}s")
-            
-            if total_chunks >= max_chunks:
-                print(f"🛑 Stopping: Maximum recording time ({max_wait}s) reached")
+                    while total_chunks < max_chunks:
+                        time.sleep(actual_block_duration)
+                        
+                        # Stop if we've been silent long enough after detecting speech
+                        if recording_started and silent_chunks >= silence_chunks_needed:
+                            print(f"🛑 Stopping: {silence_limit}s of silence detected")
+                            break
+                            
+                        # Show progress every second
+                        if total_chunks % int(1.0 / actual_block_duration) == 0:
+                            elapsed = total_chunks * actual_block_duration
+                            print(f"⏱️  Recording: {elapsed:.1f}s / {max_wait}s")
+                    
+                    if total_chunks >= max_chunks:
+                        print(f"🛑 Stopping: Maximum recording time ({max_wait}s) reached")
+                
+                recording_successful = True
+                used_sample_rate = actual_sample_rate
+                break
+                
+            except Exception as e:
+                print(f"❌ Configuration {i+1} failed: {e}")
+                # Reset variables for next attempt
+                recorded_data = []
+                silent_chunks = 0
+                total_chunks = 0
+                recording_started = False
+                continue
+        
+        if not recording_successful:
+            print("❌ All audio configurations failed")
+            return None
         
         # Process recorded data
         if not recorded_data:
@@ -201,6 +373,16 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
         
         # Concatenate all chunks
         full_audio = np.concatenate(recorded_data)
+        
+        # Convert data type if needed
+        if full_audio.dtype == 'int16':
+            full_audio = full_audio.astype(np.float32) / 32768.0
+        
+        # Resample if needed
+        if used_sample_rate != sample_rate:
+            print(f"🔄 Resampling from {used_sample_rate}Hz to {sample_rate}Hz")
+            full_audio = librosa.resample(full_audio, orig_sr=used_sample_rate, target_sr=sample_rate)
+        
         duration = len(full_audio) / sample_rate
         print(f"✅ Recording complete: {duration:.2f}s, {len(full_audio)} samples")
         
