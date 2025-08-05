@@ -206,7 +206,7 @@ def reset_audio_device_cache():
 
 def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT, 
                       silence_limit=SILENCE_LIMIT, threshold=THRESHOLD,
-                      output_dir=None, apply_enhancement=True):
+                      output_dir=None, apply_enhancement=True, stop_check_func=None):
     """
     Smart audio recording with automatic silence detection.
     Records until silence is detected or max time is reached.
@@ -218,6 +218,7 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
         threshold: RMS threshold for detecting speech
         output_dir: Directory to save the recorded file (optional)
         apply_enhancement: Whether to apply enhancement after recording
+        stop_check_func: Function to check if manual stop was requested (returns bool)
     
     Returns:
         str: Path to the recorded audio file, or None if failed
@@ -283,11 +284,16 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
         
         # Start recording
         recording_started = False
+        recording_complete = False
         
         def audio_callback(indata, frames, time, status):
-            nonlocal recorded_data, silent_chunks, total_chunks, recording_started
+            nonlocal recorded_data, silent_chunks, total_chunks, recording_started, recording_complete
             if status:
                 print(f"⚠️  Audio callback status: {status}")
+            
+            # Don't process if recording is complete
+            if recording_complete:
+                return
             
             # Convert to mono if stereo
             audio_chunk = indata[:, 0] if indata.shape[1] > 1 else indata.flatten()
@@ -307,6 +313,16 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
                 silent_chunks += 1
                 if recording_started:
                     print(f"🔵 Silence: {silent_chunks}/{silence_chunks_needed} chunks")
+                    
+                # Check if we should stop due to silence
+                if silent_chunks >= silence_chunks_needed:
+                    print(f"🛑 Silence limit reached, marking recording complete")
+                    recording_complete = True
+            
+            # Check if we should stop due to max time
+            if total_chunks >= max_chunks:
+                print(f"🛑 Max time reached, marking recording complete")
+                recording_complete = True
         
         # Try different audio configurations if the first fails
         audio_configs = [
@@ -327,20 +343,29 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
             try:
                 print(f"🧪 Trying audio configuration {i+1}/{len(audio_configs)}: {config}")
                 
+                # Reset for this configuration attempt (but keep variables that callback uses)
+                if i > 0:  # Don't reset on first attempt
+                    recorded_data = []
+                    silent_chunks = 0
+                    total_chunks = 0
+                    recording_started = False
+                    recording_complete = False
+                
                 # Record audio with callback
                 with sd.InputStream(callback=audio_callback, **config):
                     # Monitor recording progress
                     actual_sample_rate = config['samplerate']
                     actual_block_duration = BLOCK_DURATION
                     
-                    while total_chunks < max_chunks:
+                    while not recording_complete and total_chunks < max_chunks:
                         time.sleep(actual_block_duration)
                         
-                        # Stop if we've been silent long enough after detecting speech
-                        if recording_started and silent_chunks >= silence_chunks_needed:
-                            print(f"🛑 Stopping: {silence_limit}s of silence detected")
+                        # Check for manual stop signal
+                        if stop_check_func and stop_check_func():
+                            print(f"🛑 Stopping: Manual stop requested")
+                            recording_complete = True
                             break
-                            
+                        
                         # Show progress every second
                         if total_chunks % int(1.0 / actual_block_duration) == 0:
                             elapsed = total_chunks * actual_block_duration
@@ -360,6 +385,7 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
                 silent_chunks = 0
                 total_chunks = 0
                 recording_started = False
+                recording_complete = False
                 continue
         
         if not recording_successful:
@@ -367,12 +393,24 @@ def record_audio_smart(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
             return None
         
         # Process recorded data
+        print(f"🔍 Processing recorded data: {len(recorded_data)} chunks")
         if not recorded_data:
             print("❌ No audio data recorded")
             return None
         
+        # Debug information about recorded chunks
+        total_samples = sum(len(chunk) for chunk in recorded_data)
+        print(f"📊 Total audio samples collected: {total_samples}")
+        print(f"📊 Total chunks collected: {len(recorded_data)}")
+        print(f"📊 Expected samples per chunk: {chunk_size}")
+        
         # Concatenate all chunks
-        full_audio = np.concatenate(recorded_data)
+        try:
+            full_audio = np.concatenate(recorded_data)
+            print(f"✅ Successfully concatenated {len(recorded_data)} chunks into {len(full_audio)} samples")
+        except Exception as e:
+            print(f"❌ Failed to concatenate audio chunks: {e}")
+            return None
         
         # Convert data type if needed
         if full_audio.dtype == 'int16':
@@ -691,7 +729,7 @@ def transcribe(audio_path: str, language: str = LANGUAGE, vad_filter: bool = VAD
 def record_and_transcribe(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
                          silence_limit=SILENCE_LIMIT, threshold=THRESHOLD,
                          language=LANGUAGE, vad_filter=VAD_FILTER, 
-                         apply_enhancement=True) -> str:
+                         apply_enhancement=True, stop_check_func=None) -> str:
     """
     Convenience function that combines smart recording with transcription.
     Uses in-memory processing for better performance.
@@ -704,6 +742,7 @@ def record_and_transcribe(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
         language: Language for transcription
         vad_filter: Voice activity detection for transcription
         apply_enhancement: Whether to apply voice enhancement
+        stop_check_func: Function to check if manual stop was requested (returns bool)
     
     Returns:
         str: Transcribed text, or None if failed
@@ -716,7 +755,8 @@ def record_and_transcribe(sample_rate=RECORDING_SAMPLE_RATE, max_wait=MAX_WAIT,
         max_wait=max_wait,
         silence_limit=silence_limit,
         threshold=threshold,
-        apply_enhancement=False  # We'll apply enhancement during transcription
+        apply_enhancement=False,  # We'll apply enhancement during transcription
+        stop_check_func=stop_check_func
     )
     
     if not audio_path:

@@ -25,6 +25,8 @@ def streamlit_microphone_interface():
         st.session_state.transcription_result = None
     if 'transcription_returned' not in st.session_state:
         st.session_state.transcription_returned = False
+    if 'manual_stop_requested' not in st.session_state:
+        st.session_state.manual_stop_requested = False
     
     # State machine for recording flow
     status = st.session_state.recording_status
@@ -50,6 +52,7 @@ def streamlit_microphone_interface():
         st.session_state.transcription_result = None
         st.session_state.transcription_returned = False
         st.session_state.recording_error = None
+        st.session_state.manual_stop_requested = False
         
         return transcription_to_return
     
@@ -63,23 +66,40 @@ def streamlit_microphone_interface():
             st.session_state.recorded_file = None
             st.session_state.transcription_result = None
             st.session_state.transcription_returned = False
+            st.session_state.manual_stop_requested = False
             st.session_state.recording_status = "recording"
             st.rerun()
             
     elif status == "recording":
-        # Show recording in progress
+        # Show recording in progress with stop button
         st.warning("🔴 Recording in progress...")
         st.info("🎙️ Speak now! Recording will auto-stop after 5 seconds of silence or 30 seconds total.")
+        
+        # Add manual stop button
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.write("") # spacing
+        with col2:
+            if st.button("🛑 STOP Recording", type="secondary", key="stop_recording"):
+                st.session_state.manual_stop_requested = True
+                st.info("🛑 Stop requested... finishing recording...")
+                time.sleep(0.5)  # Brief delay to ensure stop signal is processed
+                st.rerun()
         
         # Perform the actual recording
         try:
             with st.spinner("🎤 Recording audio..."):
+                # Function to check if manual stop was requested
+                def check_manual_stop():
+                    return st.session_state.get('manual_stop_requested', False)
+                
                 audio_file = record_audio_smart(
                     sample_rate=16000,
                     max_wait=30.0,      # 30 seconds max
                     silence_limit=5.0,  # 5 seconds of silence
                     threshold=0.02,
-                    apply_enhancement=False  # We'll enhance during transcription
+                    apply_enhancement=False,  # We'll enhance during transcription
+                    stop_check_func=check_manual_stop
                 )
             
             if audio_file and os.path.exists(audio_file):
@@ -144,6 +164,7 @@ def streamlit_microphone_interface():
         if st.button("🔄 Try Again", key="retry_recording"):
             st.session_state.recording_status = "ready"
             st.session_state.recording_error = None
+            st.session_state.manual_stop_requested = False
             st.rerun()
     
     return None
