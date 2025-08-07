@@ -76,6 +76,8 @@ class TransferState(TypedDict):
     
     # Transaction Flow Data
     user_query: str
+    audio_file_path: str  # Path to audio file for agent processing
+    input_type: str  # "text" or "audio" to indicate input type
     destination_account: str
     transfer_amount: str
     user_token: str
@@ -1321,6 +1323,95 @@ Example output: "Do you confirm to transfer $3000 to Mike? Please confirm to pro
 # GRAPH NODES
 # ───────────────────────────────────────────────────────────────
 
+def process_audio_input(state: TransferState) -> TransferState:
+    """Process audio input by transcribing it first, then continue with text processing."""
+    try:
+        # Check if we have an audio file to process
+        audio_file_path = state.get("audio_file_path", "")
+        input_type = state.get("input_type", "text")
+        
+        if input_type == "audio" and audio_file_path:
+            print(f"🎵 PROCESSING AUDIO FILE: {audio_file_path}")
+            
+            # Import transcription functions
+            try:
+                from functions import transcribe_uploaded_file
+                
+                # Transcribe the audio file using the existing enhanced transcription
+                print("🔄 Agent transcribing audio with enhancement...")
+                transcribed_text = transcribe_uploaded_file(
+                    audio_file_path,
+                    apply_enhancement=True
+                )
+                
+                # Check if we got meaningful transcription
+                if transcribed_text and transcribed_text.strip():
+                    # Check if it's just empty or meaningless content
+                    clean_text = transcribed_text.strip()
+                    if len(clean_text) > 0 and not clean_text.isspace():
+                        print(f"✅ Audio transcribed successfully: {clean_text}")
+                        # Set the transcribed text as user query
+                        state["user_query"] = clean_text
+                        # Clear audio file path since we've processed it
+                        state["audio_file_path"] = ""
+                        state["input_type"] = "text"  # Now treating as text input
+                        
+                        # Clean up the audio file if it exists
+                        import os
+                        try:
+                            if os.path.exists(audio_file_path):
+                                os.remove(audio_file_path)
+                                print(f"🗑️  Cleaned up audio file: {audio_file_path}")
+                        except Exception as e:
+                            print(f"⚠️  Could not clean up audio file: {e}")
+                    else:
+                        print("❌ Audio transcription returned only whitespace - treating as empty")
+                        transcribed_text = None  # Force to empty handling
+                
+                # Handle empty or failed transcription
+                if not transcribed_text or not transcribed_text.strip():
+                    print("❌ Audio transcription failed - no meaningful text generated")
+                    print("🔍 This usually means:")
+                    print("   • No speech was detected in the audio")
+                    print("   • Background noise or silence was recorded")
+                    print("   • Audio quality was too poor to transcribe")
+                    
+                    # Clean up the audio file
+                    import os
+                    try:
+                        if os.path.exists(audio_file_path):
+                            os.remove(audio_file_path)
+                            print(f"🗑️  Cleaned up failed audio file: {audio_file_path}")
+                    except Exception as e:
+                        print(f"⚠️  Could not clean up audio file: {e}")
+                    
+                    # Provide helpful error message
+                    state["ai_response"] = "I couldn't detect any speech in your audio recording. This might be because:\n\n• No speech was captured\n• The recording was too quiet\n• There was only background noise\n\nPlease try recording again and speak clearly, or you can type your message instead."
+                    state["audio_file_path"] = ""
+                    state["input_type"] = "text"
+                    return state
+                    
+            except Exception as e:
+                print(f"❌ Error during audio transcription: {e}")
+                state["ai_response"] = "There was an error processing your audio. Could you please try again or type your message?"
+                state["audio_file_path"] = ""
+                state["input_type"] = "text"
+                return state
+        
+        # Now continue with normal text processing using the existing process_user_input function
+        return process_user_input(state)
+        
+    except Exception as e:
+        print(f"❌ Error in process_audio_input: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Ensure we always return a valid state with an error response
+        state["ai_response"] = "I had trouble processing your request. Could you please try again?"
+        state["audio_file_path"] = ""
+        state["input_type"] = "text"
+        return state
+
 def process_user_input(state: TransferState) -> TransferState:
     """Process user input using NOVA team approach with conversation memory."""
     try:
@@ -1819,16 +1910,16 @@ def create_banking_graph():
     
     builder = StateGraph(TransferState)
     
-    # Add nodes
-    builder.add_node("process_input", process_user_input)
+    # Add nodes - audio processing first, then regular processing
+    builder.add_node("process_audio", process_audio_input)  # New audio processing node
     builder.add_node("validate_data", validate_transfer_data)
     builder.add_node("complete_transfer", complete_transfer)
     builder.add_node("reset_state", reset_state_after_success)
     builder.add_node("finalize", finalize_process)
 
-    # Add edges
-    builder.add_edge(START, "process_input")
-    builder.add_edge("process_input", "validate_data")
+    # Add edges - start with audio processing
+    builder.add_edge(START, "process_audio")  # Start with audio processing
+    builder.add_edge("process_audio", "validate_data")  # Audio processing handles text processing internally
     
     builder.add_conditional_edges(
         "validate_data",
@@ -1855,13 +1946,17 @@ def create_banking_graph():
 # MAIN EXECUTION FUNCTION
 # ───────────────────────────────────────────────────────────────────────────────
 
-def execute_banking_graph(thread_id: str, user_input: str, user_token: str, current_state: dict = None) -> dict:
+def execute_banking_graph(thread_id: str, user_input: str, user_token: str, current_state: dict = None, audio_file_path: str = None) -> dict:
     """Execute the banking graph and return structured response."""
     
-    print(f"🚀 EXECUTE_GRAPH: {user_input} (User: {user_token})")
+    # Determine input type
+    input_type = "audio" if audio_file_path else "text"
+    input_display = audio_file_path if audio_file_path else user_input
+    
+    print(f"🚀 EXECUTE_GRAPH: {input_display} (Type: {input_type}, User: {user_token})")
     
     # Basic validation
-    if not user_input or not user_token:
+    if (not user_input and not audio_file_path) or not user_token:
         print("❌ Missing required parameters")
         return {
             "message": "Invalid request parameters",
@@ -1883,7 +1978,9 @@ def execute_banking_graph(thread_id: str, user_input: str, user_token: str, curr
         if current_state:
             print(f"🔄 Using provided conversation state - Dest: '{current_state.get('destination_account', '')}', Amount: '{current_state.get('transfer_amount', '')}'")
             initial_state = current_state.copy()
-            initial_state["user_query"] = user_input  # Update with new user input
+            initial_state["user_query"] = user_input or ""  # Set text input (empty for audio-only)
+            initial_state["audio_file_path"] = audio_file_path or ""  # Set audio file path
+            initial_state["input_type"] = input_type  # Set input type
             initial_state["thread_id"] = thread_id  # Ensure thread_id is set
             
             # Initialize memory fields if not present
@@ -1903,7 +2000,9 @@ def execute_banking_graph(thread_id: str, user_input: str, user_token: str, curr
                 user_balance="",
                 user_status="",
                 # Transaction Flow Data
-                user_query=user_input,
+                user_query=user_input or "",
+                audio_file_path=audio_file_path or "",
+                input_type=input_type,
                 destination_account="", 
                 transfer_amount="",
                 user_token=user_token,
@@ -1928,7 +2027,7 @@ def execute_banking_graph(thread_id: str, user_input: str, user_token: str, curr
         initial_state = memory_server.update_conversation_context(initial_state)
         print("✅ Conversation context updated")
 
-        print(f"🔵 Initial state prepared with user_query: {initial_state.get('user_query', 'N/A')}")
+        print(f"🔵 Initial state prepared with input_type: {input_type}, user_query: {initial_state.get('user_query', 'N/A')}, audio_file: {initial_state.get('audio_file_path', 'N/A')}")
 
         # Execute graph with better error handling
         print("🔧 Executing graph...")

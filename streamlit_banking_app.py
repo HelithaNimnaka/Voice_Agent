@@ -19,7 +19,7 @@ try:
         reset_audio_device_cache
     )
     # Import working microphone recording (replaces browser recording)
-    from streamlit_microphone import streamlit_microphone_interface
+    from streamlit_microphone import streamlit_microphone_interface, streamlit_microphone_interface_for_agent
 except ImportError as e:
     st.error(f"Error importing modules: {e}")
     st.stop()
@@ -505,16 +505,22 @@ if 'transfer_state' not in st.session_state:
         user_status="",
         # Transaction Flow Data
         user_query="",
+        audio_file_path="",
+        input_type="text",
         destination_account="",
         transfer_amount="",
         user_token=st.session_state.user_token,
         ai_response="",
-        redirect_url="",
         transaction_result="",
         # Confirmation Management
         needs_confirmation=False,
         confirmation_requested=False,
         user_confirmed=False,
+        # Memory & Conversation Management
+        chat_history=[],
+        conversation_context="",
+        turn_number=0,
+        thread_id="",
         # State Management Flags
         profile_loaded=False,
         last_balance_check=""
@@ -611,16 +617,22 @@ with st.sidebar:
             user_status="",
             # Transaction Flow Data
             user_query="",
+            audio_file_path="",
+            input_type="text",
             destination_account="",
             transfer_amount="",
             user_token=new_user_token,
             ai_response="",
-            redirect_url="",
             transaction_result="",
             # Confirmation Management
             needs_confirmation=False,
             confirmation_requested=False,
             user_confirmed=False,
+            # Memory & Conversation Management
+            chat_history=[],
+            conversation_context="",
+            turn_number=0,
+            thread_id="",
             # State Management Flags
             profile_loaded=False,
             last_balance_check=""
@@ -667,16 +679,22 @@ with st.sidebar:
             user_status="",
             # Transaction Flow Data
             user_query="",
+            audio_file_path="",
+            input_type="text",
             destination_account="",
             transfer_amount="",
             user_token=st.session_state.user_token,
             ai_response="",
-            redirect_url="",
             transaction_result="",
             # Confirmation Management
             needs_confirmation=False,
             confirmation_requested=False,
             user_confirmed=False,
+            # Memory & Conversation Management
+            chat_history=[],
+            conversation_context="",
+            turn_number=0,
+            thread_id="",
             # State Management Flags
             profile_loaded=False,
             last_balance_check=""
@@ -848,19 +866,21 @@ with col1:
         ("audio_mode" in st.session_state and st.session_state["audio_mode"] == "voice_record")
         and not st.session_state["voice_audio_processed"]
     ):        
-        # Use working microphone recording interface
-        transcription_result = streamlit_microphone_interface()
-        if transcription_result:
+        # Use working microphone recording interface - but get audio file instead of transcription
+        audio_file_result = streamlit_microphone_interface_for_agent()
+        if audio_file_result:
             st.success("✅ Recording completed successfully!")
-            st.success(f"📝 Transcription: {transcription_result}")
-            user_input_value = transcription_result.strip()
+            st.info("� Audio file will be processed by the agent...")
+            user_input_value = ""  # No text input, agent will handle audio
             input_type = "audio"
+            audio_file_path = audio_file_result  # Pass audio file path
             st.session_state["voice_audio_processed"] = True  # Only set to True when we have a result
             
             # Reset audio mode so user can start fresh next time
             st.session_state["audio_mode"] = None
         else:
             user_input_value = None
+            audio_file_path = None
             # Don't set voice_audio_processed to True yet - keep trying until we get a result
 
     # --- END NEW voice recording logic ---
@@ -877,105 +897,31 @@ with col1:
             help="⬆️ Upload and then it will be processed"
         )
         if audio_file is not None:
-            with st.spinner("🔊 Transcribing uploaded audio with enhancement..."):
-                # Load audio directly into memory for processing
+            with st.spinner("🔊 Processing uploaded audio..."):
+                # Save uploaded file to temporary location for agent processing
                 try:
-                    # Read uploaded file into memory
-                    audio_bytes = audio_file.read()
-                    
-                    # Create temporary file for audio loading
+                    # Create temporary file for audio
+                    import tempfile
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                        tmp.write(audio_bytes)
+                        tmp.write(audio_file.read())
                         tmp_path = tmp.name
                     
-                    try:
-                        # Load audio into memory
-                        audio_data, sample_rate = load_audio_any(tmp_path, target_sr=48000)
-                        
-                        # Remove temporary file immediately
-                        os.remove(tmp_path)
-                        
-                        # Transcribe using in-memory processing with enhancement
-                        voice_transcript = transcribe_audio_data(
-                            audio_data, sample_rate, apply_enhancement=True
-                        )
-                        
-                        if voice_transcript:
-                            st.success(f"📝 Transcription: {voice_transcript}")
-                            st.info("🔧 Applied voice enhancement to uploaded audio")
-                            user_input_value = voice_transcript.strip()
-                            input_type = "audio"
-                            st.session_state["voice_audio_processed"] = True
-                        else:
-                            st.error("❌ Transcription failed - no text detected")
-                            user_input_value = None
-                            
-                    except Exception as e:
-                        # Clean up temp file on error
-                        try:
-                            os.remove(tmp_path)
-                        except:
-                            pass
-                        raise e
-                        
+                    st.success("✅ Audio file uploaded successfully!")
+                    st.info("📄 Audio file will be processed by the agent...")
+                    user_input_value = ""  # No text input, agent will handle audio
+                    input_type = "audio"
+                    audio_file_path = tmp_path  # Pass temp file path to agent
+                    st.session_state["voice_audio_processed"] = True
+                    
                 except Exception as e:
-                    st.error(f"Transcription failed: {e}")
+                    st.error(f"Upload failed: {e}")
                     st.error("💡 **Try again:** You can upload a different audio file or try voice recording")
                     user_input_value = None
+                    audio_file_path = None
             
-            # Only clear uploader and process if transcription was successful
-            if user_input_value:
+            # Only clear uploader if upload was successful
+            if user_input_value == "":  # This means we have audio to process
                 uploader_ph.empty()
-                # Automatically add to chat and process as user input
-                update_transfer_state(user_query=user_input_value)
-                st.session_state.chat_history.append({
-                    'type': 'user',
-                    'content': user_input_value,
-                    'timestamp': st.session_state.conversation_count
-                })
-                with st.spinner("🤖 Processing your request..."):
-                    try:
-                        result = execute_banking_graph(
-                            thread_id=st.session_state.thread_id,
-                            user_input=user_input_value,
-                            user_token=st.session_state.user_token,
-                            current_state=st.session_state.transfer_state
-                        )
-                        response = result.get("message", "Sorry, I couldn't process your request.")
-                        if result.get("transfer_state"):
-                            transfer_state = result["transfer_state"]
-                            st.session_state.transfer_state = transfer_state
-                            if (result.get("response_type") == "transaction" and 
-                                result.get("status") == "success" and
-                                transfer_state.get('transfer_amount')):
-                                new_balance = get_current_balance(st.session_state.user_token)
-                                update_transfer_state(user_balance=new_balance)
-                        st.session_state.conversation_context['last_response'] = result
-                        st.session_state.conversation_context['turn'] = st.session_state.conversation_count
-                        if (result.get("response_type") == "transaction" and 
-                            result.get("status") == "success" and
-                            not result.get("needs_more_info", False)):
-                            st.session_state.conversation_context = {}
-                            update_transfer_state(transaction_result="COMPLETED")
-                        if (result.get("response_type") == "transaction" and 
-                            result.get("status") == "success" and 
-                            result.get("redirect_url")):
-                            response += f" Navigate to: {result['redirect_url']}"
-                        st.session_state.chat_history.append({
-                            'type': 'bot',
-                            'content': response,
-                            'timestamp': st.session_state.conversation_count
-                        })
-                        st.session_state.conversation_count += 1
-                    except Exception as e:
-                        error_message = "I apologize, but I'm experiencing technical difficulties and cannot process your request at the moment. Please try again in a few moments, or contact our customer support team for immediate assistance."
-                        update_transfer_state(ai_response=error_message, transaction_result="ERROR")
-                        st.session_state.chat_history.append({
-                            'type': 'bot',
-                            'content': error_message,
-                            'timestamp': st.session_state.conversation_count
-                        })
-                st.rerun()
     # --- END NEW uploader logic ---
 
     # Unified input form
@@ -992,29 +938,79 @@ with col1:
             send_button = st.form_submit_button("Send 📤", type="primary", use_container_width=True)
 
     # Unified user input logic
-    # user_input_value and input_type already set above for audio
+    # Initialize variables
+    if 'user_input_value' not in locals():
+        user_input_value = None
+    if 'input_type' not in locals():
+        input_type = "text"
+    if 'audio_file_path' not in locals():
+        audio_file_path = None
 
     # Only process if we have a user input (either audio or text)
     if send_button and text_input_value.strip():
         user_input_value = text_input_value.strip()
         input_type = "text"
+        audio_file_path = None
 
-    if user_input_value and input_type in ["text", "audio"]:
-        update_transfer_state(user_query=user_input_value)
+    # Process both text and audio inputs through the unified system
+    if (user_input_value is not None and input_type in ["text", "audio"]) or (input_type == "audio" and audio_file_path):
+        # For audio, we might not have user_input_value yet (agent will transcribe)
+        display_text = user_input_value if user_input_value else "[Audio message]"
+        
+        # Add to chat history for display
         st.session_state.chat_history.append({
             'type': 'user',
-            'content': user_input_value,
+            'content': display_text,
             'timestamp': st.session_state.conversation_count
         })
+        
+        # Update transfer state
+        if user_input_value:
+            update_transfer_state(user_query=user_input_value)
+        
         with st.spinner("🤖 Processing your request..."):
             try:
-                result = execute_banking_graph(
-                    thread_id=st.session_state.thread_id,
-                    user_input=user_input_value,
-                    user_token=st.session_state.user_token,
-                    current_state=st.session_state.transfer_state
-                )
+                # Call graph with audio file if available
+                if input_type == "audio" and audio_file_path:
+                    result = execute_banking_graph(
+                        thread_id=st.session_state.thread_id,
+                        user_input=user_input_value or "",  # Empty string for audio-only
+                        user_token=st.session_state.user_token,
+                        current_state=st.session_state.transfer_state,
+                        audio_file_path=audio_file_path  # Pass audio file to agent
+                    )
+                else:
+                    # Text input
+                    result = execute_banking_graph(
+                        thread_id=st.session_state.thread_id,
+                        user_input=user_input_value,
+                        user_token=st.session_state.user_token,
+                        current_state=st.session_state.transfer_state
+                    )
+                
                 response = result.get("message", "Sorry, I couldn't process your request.")
+                
+                # If this was an audio input, update the chat history with the transcribed text
+                if input_type == "audio" and result.get("transfer_state"):
+                    transfer_state = result["transfer_state"]
+                    transcribed_text = transfer_state.get("user_query", "")
+                    
+                    if transcribed_text and st.session_state.chat_history:
+                        # Find the last user message (should be "[Audio message]") and update it
+                        for i in range(len(st.session_state.chat_history) - 1, -1, -1):
+                            if st.session_state.chat_history[i]['type'] == 'user':
+                                # Update with transcribed text
+                                st.session_state.chat_history[i]['content'] = f"🎤 {transcribed_text}"
+                                break
+                    else:
+                        # No transcription available (empty/failed), update with appropriate message
+                        if st.session_state.chat_history:
+                            for i in range(len(st.session_state.chat_history) - 1, -1, -1):
+                                if st.session_state.chat_history[i]['type'] == 'user':
+                                    # Update with failed transcription message
+                                    st.session_state.chat_history[i]['content'] = "🎤 [No speech detected in audio]"
+                                    break
+                
                 if result.get("transfer_state"):
                     transfer_state = result["transfer_state"]
                     st.session_state.transfer_state = transfer_state

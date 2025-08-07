@@ -170,6 +170,131 @@ def streamlit_microphone_interface():
     return None
 
 
+def streamlit_microphone_interface_for_agent():
+    """
+    Streamlit interface for direct microphone recording - returns audio file path for agent processing
+    Returns audio file path if successful, None otherwise
+    """
+    
+    # Initialize session state for agent version
+    if 'agent_recording_status' not in st.session_state:
+        st.session_state.agent_recording_status = "ready"
+    if 'agent_recording_error' not in st.session_state:
+        st.session_state.agent_recording_error = None
+    if 'agent_recorded_file' not in st.session_state:
+        st.session_state.agent_recorded_file = None
+    if 'agent_file_returned' not in st.session_state:
+        st.session_state.agent_file_returned = False
+    if 'agent_manual_stop_requested' not in st.session_state:
+        st.session_state.agent_manual_stop_requested = False
+    
+    # State machine for recording flow
+    status = st.session_state.agent_recording_status
+    
+    # If we have a completed recording that hasn't been returned yet, return it
+    if (status == "completed" and 
+        st.session_state.agent_recorded_file and 
+        not st.session_state.agent_file_returned):
+        
+        # Mark as returned and reset for next recording
+        st.session_state.agent_file_returned = True
+        
+        # Show result briefly
+        st.success("✅ Audio file ready for agent processing!")
+        st.info(f"📁 **Audio file:** {os.path.basename(st.session_state.agent_recorded_file)}")
+        
+        # Get the file path to return
+        file_to_return = st.session_state.agent_recorded_file
+        
+        # Reset immediately so user can start new recording (but don't delete file yet - agent will handle it)
+        st.session_state.agent_recording_status = "ready"
+        st.session_state.agent_recorded_file = None
+        st.session_state.agent_file_returned = False
+        st.session_state.agent_recording_error = None
+        st.session_state.agent_manual_stop_requested = False
+        
+        return file_to_return
+    
+    if status == "ready":
+        # Show start recording button
+        st.info("🎤 Ready to record. Click the button to start.")
+        
+        if st.button("🎤 Start Microphone Recording", type="primary", key="agent_start_mic_recording"):
+            # Reset previous states
+            st.session_state.agent_recording_error = None
+            st.session_state.agent_recorded_file = None
+            st.session_state.agent_file_returned = False
+            st.session_state.agent_manual_stop_requested = False
+            st.session_state.agent_recording_status = "recording"
+            st.rerun()
+            
+    elif status == "recording":
+        # Show recording in progress with stop button
+        st.warning("🔴 Recording in progress...")
+        st.info("🎙️ Speak now! Recording will auto-stop after 5 seconds of silence or 30 seconds total.")
+        
+        # Add manual stop button
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.write("") # spacing
+        with col2:
+            if st.button("🛑 STOP Recording", type="secondary", key="agent_stop_recording"):
+                st.session_state.agent_manual_stop_requested = True
+                st.info("🛑 Stop requested... finishing recording...")
+                time.sleep(0.5)  # Brief delay to ensure stop signal is processed
+                st.rerun()
+        
+        # Perform the actual recording
+        try:
+            with st.spinner("🎤 Recording audio..."):
+                # Function to check if manual stop was requested
+                def check_manual_stop():
+                    return st.session_state.get('agent_manual_stop_requested', False)
+                
+                audio_file = record_audio_smart(
+                    sample_rate=16000,
+                    max_wait=30.0,      # 30 seconds max
+                    silence_limit=5.0,  # 5 seconds of silence
+                    threshold=0.02,
+                    apply_enhancement=False,  # Agent will handle enhancement during transcription
+                    stop_check_func=check_manual_stop
+                )
+            
+            if audio_file and os.path.exists(audio_file):
+                st.session_state.agent_recorded_file = audio_file
+                st.session_state.agent_recording_status = "completed"
+                st.success("✅ Recording completed!")
+                st.rerun()
+            else:
+                st.session_state.agent_recording_error = "❌ Recording failed - no audio captured"
+                st.session_state.agent_recording_status = "error"
+                st.rerun()
+                
+        except Exception as e:
+            st.session_state.agent_recording_error = f"❌ Recording error: {e}"
+            st.session_state.agent_recording_status = "error"
+            st.rerun()
+            
+    elif status == "completed":
+        # This state should be very brief - just to trigger the return above
+        # If we get here without returning, something went wrong, reset
+        st.session_state.agent_recording_status = "ready"
+        st.rerun()
+            
+    elif status == "error":
+        # Show error and retry option
+        if st.session_state.agent_recording_error:
+            st.error(st.session_state.agent_recording_error)
+        
+        if st.button("🔄 Try Again", key="agent_retry_recording"):
+            st.session_state.agent_recording_status = "ready"
+            st.session_state.agent_recording_error = None
+            st.session_state.agent_manual_stop_requested = False
+            st.rerun()
+    
+    return None
+
+
 def microphone_record_and_transcribe(**kwargs):
     """
     Drop-in replacement for browser recording functions.

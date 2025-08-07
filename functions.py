@@ -667,12 +667,28 @@ def transcribe_audio_data(audio_data: np.ndarray, sample_rate: int,
             
             t1 = time.time()
             
+            # Check audio quality indicators
+            audio_rms = np.sqrt(np.mean(final_audio**2))
+            audio_max = np.max(np.abs(final_audio))
+            
             print("\n=== Final Transcription ===")
-            print(text, "\n")
+            print(f"Text: '{text}'")
+            print(f"Audio RMS: {audio_rms:.4f}, Max: {audio_max:.4f}")
+            
+            # Provide feedback about potential issues
+            if not text or len(text.strip()) == 0:
+                print("⚠️  Empty transcription - possible causes:")
+                if audio_rms < 0.001:
+                    print("   • Audio is too quiet (RMS < 0.001)")
+                elif audio_max < 0.01:
+                    print("   • Audio amplitude is very low")
+                else:
+                    print("   • No speech detected despite audio levels")
+            
             print(f"Transcription time: {t1 - t0:.2f}s")
             print(f"Total elapsed: {time.time() - start_total:.2f}s")
             
-            return text
+            return text if text and text.strip() else None
             
         finally:
             # Clean up temporary file
